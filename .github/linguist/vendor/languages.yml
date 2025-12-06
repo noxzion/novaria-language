@@ -1,8 +1,0 @@
-name: Perano
-type: programming
-color: "#ACB9E8"
-extensions:
-  - ".per"
-tm_scope: source.perano
-ace_mode: text
-language_id: 13487
