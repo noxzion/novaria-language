@@ -264,6 +264,17 @@ impl NVMCodeGen {
                 self.emit_byte(POP);
             }
 
+            Statement::InlineAsm { code } => {
+                // Parse and emit NVM assembly instructions
+                for line in code.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with(';') {
+                        continue;
+                    }
+                    self.emit_asm_instruction(line);
+                }
+            }
+
             Statement::PointerAssignment { target, value } => {
                 // Generate target address first
                 self.generate_expression(target, program);
@@ -621,6 +632,40 @@ impl NVMCodeGen {
         self.emit_byte(PUSH32);
         let bytes = value.to_be_bytes();
         self.bytecode.extend_from_slice(&bytes);
+    }
+
+    fn emit_asm_instruction(&mut self, line: &str) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.is_empty() {
+            return;
+        }
+
+        let instr = parts[0].to_lowercase();
+        match instr.as_str() {
+            "push32" | "push" => {
+                if parts.len() > 1 {
+                    if let Ok(value) = parts[1].parse::<i32>() {
+                        self.emit_push32(value);
+                    }
+                }
+            }
+            "pop" => self.emit_byte(POP),
+            "add" => self.emit_byte(ADD),
+            "sub" => self.emit_byte(SUB),
+            "mul" => self.emit_byte(MUL),
+            "div" => self.emit_byte(DIV),
+            "mod" => self.emit_byte(MOD),
+            "syscall" => {
+                self.emit_byte(SYSCALL);
+                if parts.len() > 1 {
+                    if let Ok(value) = parts[1].parse::<u8>() {
+                        self.emit_byte(value);
+                    }
+                }
+            }
+            "ret" => self.emit_byte(RET),
+            _ => {}
+        }
     }
 
     fn emit_label_ref(&mut self, label: &str) {

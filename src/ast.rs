@@ -80,6 +80,9 @@ pub enum Statement {
     },
     Return(Option<Expression>),
     Expression(Expression),
+    InlineAsm {
+        code: String,
+    },
 }
 
 #[derive(Debug, Clone)]

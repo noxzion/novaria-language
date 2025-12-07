@@ -160,6 +160,9 @@ impl<'a> CodeGen<'a> {
             Statement::Expression(expr) => {
                 self.generate_expression(expr);
             }
+            Statement::InlineAsm { .. } => {
+                // Inline assembly not supported for PE/ELF targets
+            }
             Statement::If { condition, then_body, else_body } => {
                 self.generate_expression(condition);
 

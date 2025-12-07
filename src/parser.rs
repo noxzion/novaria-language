@@ -210,6 +210,7 @@ impl Parser {
             Token::If => self.parse_if(),
             Token::For => self.parse_for(),
             Token::Return => self.parse_return(),
+            Token::Asm => self.parse_asm(),
             Token::Star => {
                 // Check if this is a pointer assignment (*ptr = value)
                 let next_pos = self.position + 1;
@@ -414,6 +415,50 @@ impl Parser {
         };
 
         Ok(Statement::Return(value))
+    }
+
+    fn parse_asm(&mut self) -> crate::error::Result<Statement> {
+        self.expect(Token::Asm)?;
+        
+        if let Token::String(code) = self.current_token() {
+            let asm_code = code.clone();
+            self.advance();
+            Ok(Statement::InlineAsm { code: asm_code })
+        } else if matches!(self.current_token(), Token::LeftBrace) {
+            self.advance();
+            self.skip_newlines();
+            
+            let mut asm_lines = Vec::new();
+            while !matches!(self.current_token(), Token::RightBrace) {
+                if let Token::Identifier(instr) = self.current_token() {
+                    let mut line = instr.clone();
+                    self.advance();
+                    
+                    while !matches!(self.current_token(), Token::Newline | Token::RightBrace) {
+                        match self.current_token() {
+                            Token::Number(n) => {
+                                line.push_str(&format!(" {}", n));
+                                self.advance();
+                            }
+                            Token::Identifier(id) => {
+                                line.push_str(&format!(" {}", id));
+                                self.advance();
+                            }
+                            _ => {
+                                self.advance();
+                            }
+                        }
+                    }
+                    asm_lines.push(line);
+                }
+                self.skip_newlines();
+            }
+            
+            self.expect(Token::RightBrace)?;
+            Ok(Statement::InlineAsm { code: asm_lines.join("\n") })
+        } else {
+            Err(self.error("expected assembly code string or block after 'asm'".to_string()))
+        }
     }
 
     fn parse_expression(&mut self) -> Expression {

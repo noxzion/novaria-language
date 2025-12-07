@@ -228,6 +228,10 @@ impl NVMAssemblyGenerator {
                 self.output.push_str("    store_abs\n");
             }
 
+            Statement::InlineAsm { code } => {
+                self.output.push_str(&format!("    ; inline asm\n{}\n", code));
+            }
+
             _ => {
                 self.output.push_str("    ; unsupported statement\n");
             }

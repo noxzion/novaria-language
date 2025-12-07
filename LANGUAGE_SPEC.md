@@ -107,6 +107,13 @@ fn add(a: i64, b: i64) -> i64 {
 var result: i64 = add(10, 20)
 ```
 
+### Inline-assembly (NVM-bytecode)
+```perano
+asm {
+    push32 72
+}
+```
+
 ## Operators
 
 ### Arithmetic
@@ -217,6 +224,24 @@ fn main() {
 }
 ```
 
+## Example with inline-NVM
+```perano
+package main
+
+fn main() {
+    asm {
+        push32 72
+        syscall 13
+        push32 105
+        syscall 13
+        push32 33
+        syscall 13
+        push32 10
+        syscall 13
+    }
+}
+```
+
 ## Language Features
 
 ### Supported
@@ -230,6 +255,7 @@ fn main() {
 - For loops
 - Module system
 - Standard library
+- Inline-NVM
 
 ### Limitations (currently)
 - No structures/records

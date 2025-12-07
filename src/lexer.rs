@@ -8,6 +8,7 @@ pub enum Token {
     Else,
     For,
     Return,
+    Asm,
 
     Identifier(String),
     Number(i64),
@@ -168,6 +169,7 @@ impl Lexer {
             "while" => Token::For,
             "loop" => Token::For,
             "return" => Token::Return,
+            "asm" => Token::Asm,
             "pub" => Token::Identifier(id),
             _ => Token::Identifier(id),
         }
