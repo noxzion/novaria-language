@@ -16,7 +16,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        eprintln!("Usage: {} <source.per> [--elf|--nvm-code|--novaria]", args[0]);
+        eprintln!("Usage: {} <source.per> [--elf|--nvm-code|--novaria|--pe-c]", args[0]);
         process::exit(1);
     }
 
@@ -59,9 +59,10 @@ fn main() {
             "--elf" => "elf",
             "--nvm-code" => "nvm-code",
             "--novaria" => "novaria",
+            "--pe-asm" => "pe-asm",
             _ => {
                 eprintln!("Unknown target: {}", args[2]);
-                eprintln!("Valid targets: --elf, --nvm-code, --novaria");
+                eprintln!("Valid targets: --elf, --nvm-code, --novaria, --pe-asm");
                 process::exit(1);
             }
         }
@@ -114,12 +115,15 @@ fn main() {
         "elf" => {
             compile_elf_proper(&ast, &output_file);
         }
-        _ => {
+        "pe-asm" => {
             let mut codegen = pe::CodeGen::new(target);
             let machine_code = codegen.generate(&ast);
             let mut pe_writer = pe::PEWriter::new();
             pe_writer.write(&output_file, &machine_code)
                 .expect("Failed to write executable");
+        }
+        _ => {
+            compile_pe_with_c(&ast, &output_file);
         }
     }
 
@@ -211,6 +215,17 @@ fn compile_nvm_asm(ast: &ast::Program, output_file: &str) {
 
     let mut file = fs::File::create(output_file).expect("Failed to create .asm file");
     file.write_all(asm_code.as_bytes()).expect("Failed to write NVM assembly");
+}
+
+fn compile_pe_with_c(ast: &ast::Program, output_file: &str) {
+    let mut c_gen = pe::c_codegen::CCodeGen::new();
+    let c_code = c_gen.generate(ast).expect("Failed to generate C code");
+    
+    if let Err(e) = c_gen.compile_c_code(&c_code, output_file) {
+        eprintln!("Failed to compile C code: {}", e);
+        eprintln!("Make sure cl.exe is available (run from Developer Command Prompt)");
+        process::exit(1);
+    }
 }
 
 fn compile_elf_proper(ast: &ast::Program, output_file: &str) {

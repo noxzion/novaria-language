@@ -390,7 +390,144 @@ impl<'a> CodeGen<'a> {
                 self.generate_expression(operand);
                 self.emit(&[0x48, 0x8B, 0x00]);
             }
+            Expression::String(s) => {
+                // Check if contains interpolation
+                if s.contains("$(") {
+                    self.generate_string_interpolation(s);
+                } else {
+                    // Regular string
+                    self.emit(&[0xEB]); // jmp
+                    self.emit(&[(s.len() + 1) as u8]);
+                    let addr = self.code.len();
+                    self.code.extend_from_slice(s.as_bytes());
+                    self.code.push(0);
+                    let lea_pos = self.code.len() + 7;
+                    let offset = (addr as i32) - (lea_pos as i32);
+                    self.emit(&[0x48, 0x8D, 0x05]); // lea rax, [rip+offset]
+                    self.emit_i32(offset);
+                }
+            }
             _ => {}
+        }
+    }
+    
+    fn generate_string_interpolation(&mut self, s: &str) {
+        // Allocate buffer in .data if not yet done
+        if self.data.is_empty() {
+            self.data.extend_from_slice(&[0u8; 2048]);
+        }
+        
+        // Load .data buffer address
+        self.emit(&[0x48, 0x8D, 0x1D]); // lea rbx, [rip+offset]
+        self.emit_i32(0x40000000u32 as i32); // Placeholder
+        
+        // r12 = write position
+        self.emit(&[0x49, 0x89, 0xDC]); // mov r12, rbx
+        
+        // Parse string and generate code
+        let mut pos = 0;
+        while pos < s.len() {
+            if let Some(start) = s[pos..].find("$(") {
+                // Copy literal before $(
+                if start > 0 {
+                    let literal = &s[pos..pos+start];
+                    self.copy_literal_to_buffer(literal);
+                }
+                pos += start + 2;
+                
+                // Find closing )
+                if let Some(end) = s[pos..].find(')') {
+                    let var_name = &s[pos..pos+end];
+                    self.copy_variable_to_buffer(var_name);
+                    pos += end + 1;
+                } else {
+                    break;
+                }
+            } else {
+                // Rest is literal
+                let literal = &s[pos..];
+                self.copy_literal_to_buffer(literal);
+                break;
+            }
+        }
+        
+        // Null terminate
+        self.emit(&[0x41, 0xC6, 0x04, 0x24, 0x00]); // mov byte [r12], 0
+        
+        // Return buffer in rax
+        self.emit(&[0x48, 0x89, 0xD8]); // mov rax, rbx
+    }
+    
+    fn copy_literal_to_buffer(&mut self, lit: &str) {
+        // Embed literal
+        self.emit(&[0xEB, (lit.len() + 1) as u8]);
+        let addr = self.code.len();
+        self.code.extend_from_slice(lit.as_bytes());
+        self.code.push(0);
+        
+        // Load address
+        let lea_pos = self.code.len() + 7;
+        let offset = (addr as i32) - (lea_pos as i32);
+        self.emit(&[0x48, 0x8D, 0x35]); // lea rsi, [rip+offset]
+        self.emit_i32(offset);
+        
+        // Copy loop
+        let loop_start = self.code.len();
+        self.emit(&[0x48, 0x8A, 0x06]); // mov al, [rsi]
+        self.emit(&[0x48, 0x84, 0xC0]); // test al, al
+        self.emit(&[0x74, 0x0A]); // jz done
+        self.emit(&[0x41, 0x88, 0x04, 0x24]); // mov [r12], al
+        self.emit(&[0x49, 0xFF, 0xC4]); // inc r12
+        self.emit(&[0x48, 0xFF, 0xC6]); // inc rsi
+        let back = (loop_start as i32) - (self.code.len() as i32) - 2;
+        self.emit(&[0xEB, (back as u8)]); // jmp loop
+    }
+    
+    fn copy_variable_to_buffer(&mut self, var_name: &str) {
+        // Load variable value
+        if let Some(&offset) = self.variables.get(var_name) {
+            self.emit(&[0x48, 0x8B, 0x85]); // mov rax, [rbp+offset]
+            self.emit_i32(offset);
+            
+            // Convert number to string (simple itoa)
+            self.emit(&[0x48, 0x83, 0xEC, 0x20]); // sub rsp, 32
+            self.emit(&[0x48, 0x8D, 0x7C, 0x24, 0x1E]); // lea rdi, [rsp+30]
+            
+            // Handle negative
+            self.emit(&[0x48, 0x85, 0xC0]); // test rax, rax
+            self.emit(&[0x79, 0x09]); // jns positive
+            self.emit(&[0x48, 0xF7, 0xD8]); // neg rax
+            self.emit(&[0x41, 0xC6, 0x04, 0x24, 0x2D]); // mov byte [r12], '-'
+            self.emit(&[0x49, 0xFF, 0xC4]); // inc r12
+            
+            // Convert digits
+            self.emit(&[0x48, 0x89, 0xC3]); // mov rbx, rax
+            let digit_loop = self.code.len();
+            self.emit(&[0x48, 0x89, 0xD8]); // mov rax, rbx
+            self.emit(&[0x48, 0x31, 0xD2]); // xor rdx, rdx
+            self.emit(&[0x48, 0xC7, 0xC1, 0x0A, 0x00, 0x00, 0x00]); // mov rcx, 10
+            self.emit(&[0x48, 0xF7, 0xF1]); // div rcx
+            self.emit(&[0x80, 0xC2, 0x30]); // add dl, '0'
+            self.emit(&[0x88, 0x17]); // mov [rdi], dl
+            self.emit(&[0x48, 0xFF, 0xCF]); // dec rdi
+            self.emit(&[0x48, 0x89, 0xC3]); // mov rbx, rax
+            self.emit(&[0x48, 0x85, 0xC0]); // test rax, rax
+            let back = (digit_loop as i32) - (self.code.len() as i32) - 2;
+            self.emit(&[0x75, ((-back) as u8)]); // jnz loop
+            
+            // Copy to buffer
+            self.emit(&[0x48, 0xFF, 0xC7]); // inc rdi
+            let copy_loop = self.code.len();
+            self.emit(&[0x48, 0x8A, 0x07]); // mov al, [rdi]
+            self.emit(&[0x48, 0x84, 0xC0]); // test al, al
+            self.emit(&[0x74, 0x0A]); // jz done
+            self.emit(&[0x41, 0x88, 0x04, 0x24]); // mov [r12], al
+            self.emit(&[0x49, 0xFF, 0xC4]); // inc r12
+            self.emit(&[0x48, 0xFF, 0xC7]); // inc rdi
+            let back2 = (copy_loop as i32) - (self.code.len() as i32) - 2;
+            self.emit(&[0xEB, (back2 as u8)]); // jmp loop
+            
+            self.emit(&[0x48, 0x83, 0xC4, 0x20]); // add rsp, 32
         }
     }
 

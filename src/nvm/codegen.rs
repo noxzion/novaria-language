@@ -301,6 +301,12 @@ impl NVMCodeGen {
                 self.emit_push32(0);
             }
 
+            Expression::TemplateString { parts: _ } => {
+                // For NVM, template strings are not fully supported yet
+                // Just push 0 as placeholder
+                self.emit_push32(0);
+            }
+
             Expression::Identifier(name) => {
                 if let Some(&local_index) = self.local_vars.get(name) {
                     self.emit_byte(LOAD);

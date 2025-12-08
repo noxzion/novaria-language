@@ -625,6 +625,128 @@ impl Parser {
         }
     }
 
+    fn parse_template_string(&mut self, s: String) -> Expression {
+        use crate::ast::{TemplateStringPart, FormatSpec, FormatType};
+        
+        let mut parts = Vec::new();
+        let mut current_literal = String::new();
+        let mut chars = s.chars().peekable();
+        
+        while let Some(ch) = chars.next() {
+            if ch == '$' && chars.peek() == Some(&'(') {
+                // Found interpolation start
+                chars.next(); // consume '('
+                
+                // Save current literal if any
+                if !current_literal.is_empty() {
+                    parts.push(TemplateStringPart::Literal(current_literal.clone()));
+                    current_literal.clear();
+                }
+                
+                // Extract expression string
+                let mut expr_str = String::new();
+                let mut paren_depth = 1;
+                
+                while let Some(ch) = chars.next() {
+                    if ch == '(' {
+                        paren_depth += 1;
+                        expr_str.push(ch);
+                    } else if ch == ')' {
+                        paren_depth -= 1;
+                        if paren_depth == 0 {
+                            break;
+                        }
+                        expr_str.push(ch);
+                    } else {
+                        expr_str.push(ch);
+                    }
+                }
+                
+                // Parse format specifier if present (e.g., "value:08x")
+                let (expr_str, format_spec) = self.parse_format_spec(&expr_str);
+                
+                // Parse the expression
+                let mut lexer = crate::lexer::Lexer::new(&expr_str);
+                let tokens = lexer.tokenize();
+                let mut parser = Parser::new(tokens, &self.file);
+                let expr = parser.parse_expression();
+                
+                parts.push(TemplateStringPart::Expression {
+                    expr: Box::new(expr),
+                    format: format_spec,
+                });
+            } else {
+                current_literal.push(ch);
+            }
+        }
+        
+        // Add remaining literal if any
+        if !current_literal.is_empty() {
+            parts.push(TemplateStringPart::Literal(current_literal));
+        }
+        
+        Expression::TemplateString { parts }
+    }
+    
+    fn parse_format_spec(&self, expr_str: &str) -> (String, Option<crate::ast::FormatSpec>) {
+        use crate::ast::{FormatSpec, FormatType};
+        
+        // Look for format specifier after colon, e.g., "x:08d" or "x:x"
+        if let Some(colon_pos) = expr_str.rfind(':') {
+            let expr_part = expr_str[..colon_pos].trim();
+            let format_part = expr_str[colon_pos + 1..].trim();
+            
+            if !format_part.is_empty() {
+                let mut width = None;
+                let mut padding = ' ';
+                let mut format_type = FormatType::Auto;
+                
+                let mut format_chars = format_part.chars().peekable();
+                
+                // Check for zero padding
+                if format_chars.peek() == Some(&'0') {
+                    padding = '0';
+                    format_chars.next();
+                }
+                
+                // Parse width
+                let mut width_str = String::new();
+                while let Some(&ch) = format_chars.peek() {
+                    if ch.is_ascii_digit() {
+                        width_str.push(ch);
+                        format_chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                
+                if !width_str.is_empty() {
+                    width = width_str.parse().ok();
+                }
+                
+                // Parse format type
+                if let Some(ch) = format_chars.next() {
+                    format_type = match ch {
+                        'd' => FormatType::Decimal,
+                        'x' => FormatType::Hex,
+                        'X' => FormatType::HexUpper,
+                        's' => FormatType::String,
+                        _ => FormatType::Auto,
+                    };
+                }
+                
+                return (expr_part.to_string(), Some(FormatSpec {
+                    width,
+                    precision: None,
+                    format_type,
+                    padding,
+                }));
+            }
+        }
+        
+        (expr_str.to_string(), None)
+    }
+
     fn parse_primary(&mut self) -> Expression {
         match self.current_token().clone() {
             Token::Number(n) => {
@@ -647,7 +769,12 @@ impl Parser {
                     };
                 }
 
-                Expression::String(s)
+                // Check if string contains interpolation syntax $(...)
+                if s.contains("$(") {
+                    self.parse_template_string(s)
+                } else {
+                    Expression::String(s)
+                }
             }
             Token::Identifier(name) => {
                 self.advance();

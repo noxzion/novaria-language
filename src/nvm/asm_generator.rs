@@ -248,6 +248,28 @@ impl NVMAssemblyGenerator {
                 self.output.push_str("    push 0  ; string not supported\n");
             }
 
+            Expression::TemplateString { parts } => {
+                use crate::ast::TemplateStringPart;
+                
+                // For NVM, we'll try to build a simple representation
+                self.output.push_str("    ; template string (limited support)\n");
+                
+                for part in parts {
+                    match part {
+                        TemplateStringPart::Literal(_lit) => {
+                            // Skip literals for now in NVM
+                        }
+                        TemplateStringPart::Expression { expr, format: _ } => {
+                            // Just evaluate the expression
+                            self.generate_expression(expr, program);
+                        }
+                    }
+                }
+                
+                // Push 0 as placeholder
+                self.output.push_str("    push 0  ; template string result\n");
+            }
+
             Expression::Identifier(name) => {
                 if let Some(&local_index) = self.local_vars.get(name) {
                     self.output.push_str(&format!("    load {}  ; {}\n", local_index, name));

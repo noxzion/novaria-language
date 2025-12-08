@@ -24,4 +24,6 @@ target/*
 
 
 # Temporary test files
-examples/tmp_*
+examples/tmp_*/*
+examples/build/** */
+build/**

@@ -35,6 +35,52 @@ var x: i64 = 42
 var name: string = "Hello"
 ```
 
+### String Interpolation
+Perano supports JavaScript-style string interpolation using `$(...)` syntax with advanced formatting:
+
+```perano
+var name string = "World"
+var age int = 25
+
+// Variable interpolation (including string variables!)
+var greeting string = "Hello, $(name)!"
+
+// Expression interpolation
+var x int = 10
+var y int = 20
+var result string = "$(x) + $(y) = $(x + y)"
+
+// Formatting with width and padding
+var code int = 42
+var formatted string = "Code: $(code:04d)"  // Output: Code: 0042
+
+// Hexadecimal formatting
+var value int = 255
+var hex string = "0x$(value:08x)"  // Output: 0x000000ff
+var hexUpper string = "0x$(value:08X)"  // Output: 0x000000FF
+```
+
+#### Format Specifiers
+
+- `$(expr:d)` - Decimal integer
+- `$(expr:x)` - Hexadecimal lowercase
+- `$(expr:X)` - Hexadecimal uppercase
+- `$(expr:08d)` - Zero-padded to 8 digits
+- `$(expr:10d)` - Space-padded to 10 characters
+
+**Supported:**
+- ✅ String variable interpolation
+- ✅ Numeric expressions with formatting
+- ✅ Width and zero-padding
+- ✅ Decimal and hexadecimal formats
+
+**Platform Support:**
+- ✅ ELF (Linux) - Full support
+- ⚠️ PE (Windows) - Limited support
+- ⚠️ NVM - Not supported
+
+See `STRING_INTERPOLATION_ADVANCED.md` for detailed documentation.
+
 ## Variables
 
 ### Declaration

@@ -89,6 +89,9 @@ pub enum Statement {
 pub enum Expression {
     Number(i64),
     String(String),
+    TemplateString {
+        parts: Vec<TemplateStringPart>,
+    },
     Identifier(String),
     Binary {
         op: BinaryOp,
@@ -122,6 +125,32 @@ pub enum Expression {
     Deref {
         operand: Box<Expression>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum TemplateStringPart {
+    Literal(String),
+    Expression {
+        expr: Box<Expression>,
+        format: Option<FormatSpec>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct FormatSpec {
+    pub width: Option<usize>,
+    pub precision: Option<usize>,
+    pub format_type: FormatType,
+    pub padding: char,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FormatType {
+    Decimal,      // d - decimal integer
+    Hex,          // x - hexadecimal lowercase
+    HexUpper,     // X - hexadecimal uppercase
+    String,       // s - string
+    Auto,         // auto-detect based on expression type
 }
 
 #[derive(Debug, Clone, PartialEq)]
