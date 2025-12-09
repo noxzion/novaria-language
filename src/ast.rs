@@ -81,7 +81,7 @@ pub enum Statement {
     Return(Option<Expression>),
     Expression(Expression),
     InlineAsm {
-        code: String,
+        parts: Vec<AsmPart>,
     },
 }
 
@@ -125,6 +125,9 @@ pub enum Expression {
     Deref {
         operand: Box<Expression>,
     },
+    Eval {
+        instruction: Box<Expression>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +137,12 @@ pub enum TemplateStringPart {
         expr: Box<Expression>,
         format: Option<FormatSpec>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum AsmPart {
+    Literal(String),
+    Variable(String),
 }
 
 #[derive(Debug, Clone)]

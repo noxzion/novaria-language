@@ -43,6 +43,7 @@ pub enum Token {
     Arrow,
     Ampersand,
     DoublePlus,
+    Dollar,
 
     Newline,
     Eof,
@@ -341,6 +342,10 @@ impl Lexer {
                 }
                 Some('.') => {
                     tokens.push(Token::Dot);
+                    self.advance();
+                }
+                Some('$') => {
+                    tokens.push(Token::Dollar);
                     self.advance();
                 }
                 Some('#') => {

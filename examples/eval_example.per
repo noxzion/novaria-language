@@ -1,0 +1,17 @@
+package main
+
+import "stdio"
+
+fn main() {
+    var operation = "push 42"
+    
+    stdio.Println("Dynamic operation execution:")
+    
+    asm {
+        $(operation)
+        syscall 13
+    }
+    
+    stdio.Println("")
+    stdio.Println("Done!")
+}

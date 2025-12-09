@@ -228,8 +228,30 @@ impl NVMAssemblyGenerator {
                 self.output.push_str("    store_abs\n");
             }
 
-            Statement::InlineAsm { code } => {
-                self.output.push_str(&format!("    ; inline asm\n{}\n", code));
+            Statement::InlineAsm { parts } => {
+                use crate::ast::AsmPart;
+                
+                self.output.push_str("    ; inline asm\n");
+                
+                // Build full asm code with variable interpolation
+                for part in parts {
+                    match part {
+                        AsmPart::Literal(s) => {
+                            self.output.push_str(s);
+                        }
+                        AsmPart::Variable(var_name) => {
+                            // Check if variable is compile-time constant string
+                            // For now, just emit load instruction
+                            // TODO: support string variable substitution
+                            if let Some(&local_index) = self.local_vars.get(var_name) {
+                                self.output.push_str(&format!("load {}", local_index));
+                            } else {
+                                self.output.push_str(&format!("; ERROR: Unknown variable: {}", var_name));
+                            }
+                        }
+                    }
+                }
+                self.output.push_str("\n");
             }
 
             _ => {
@@ -251,23 +273,25 @@ impl NVMAssemblyGenerator {
             Expression::TemplateString { parts } => {
                 use crate::ast::TemplateStringPart;
                 
-                // For NVM, we'll try to build a simple representation
-                self.output.push_str("    ; template string (limited support)\n");
+                // For NVM, print each part of the template string inline
+                self.output.push_str("    ; template string\n");
                 
                 for part in parts {
                     match part {
-                        TemplateStringPart::Literal(_lit) => {
-                            // Skip literals for now in NVM
+                        TemplateStringPart::Literal(lit) => {
+                            // Print literal string
+                            for ch in lit.as_bytes() {
+                                self.output.push_str(&format!("    push {}\n", *ch as i32));
+                                self.output.push_str("    syscall print\n");
+                            }
                         }
                         TemplateStringPart::Expression { expr, format: _ } => {
-                            // Just evaluate the expression
+                            // Evaluate and print the expression
                             self.generate_expression(expr, program);
+                            self.output.push_str("    syscall print_int\n");
                         }
                     }
                 }
-                
-                // Push 0 as placeholder
-                self.output.push_str("    push 0  ; template string result\n");
             }
 
             Expression::Identifier(name) => {
@@ -343,14 +367,34 @@ impl NVMAssemblyGenerator {
                             }
                         }
                     } else if function == "Print" || function == "Println" {
-                        // Print integer - generate inline syscall
                         self.output.push_str(&format!("    ; call {}.{}\n", module, function));
                         if !args.is_empty() {
-                            self.generate_expression(&args[0], program);
-                            self.output.push_str("    syscall print_int\n");
-                            if function == "Println" {
-                                self.output.push_str("    push 10\n"); // newline character
-                                self.output.push_str("    syscall print\n");
+                            // Check if argument is a string
+                            if let Expression::String(s) = &args[0] {
+                                // Print string directly
+                                for ch in s.as_bytes() {
+                                    self.output.push_str(&format!("    push {}\n", *ch as i32));
+                                    self.output.push_str("    syscall print\n");
+                                }
+                                if function == "Println" {
+                                    self.output.push_str("    push 10\n"); // newline character
+                                    self.output.push_str("    syscall print\n");
+                                }
+                            } else if let Expression::TemplateString { .. } = &args[0] {
+                                // Template string already prints itself, just add newline if needed
+                                self.generate_expression(&args[0], program);
+                                if function == "Println" {
+                                    self.output.push_str("    push 10\n"); // newline character
+                                    self.output.push_str("    syscall print\n");
+                                }
+                            } else {
+                                // Print integer - generate inline syscall
+                                self.generate_expression(&args[0], program);
+                                self.output.push_str("    syscall print_int\n");
+                                if function == "Println" {
+                                    self.output.push_str("    push 10\n"); // newline character
+                                    self.output.push_str("    syscall print\n");
+                                }
                             }
                         }
                         return;

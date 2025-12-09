@@ -51,6 +51,7 @@ pub struct NVMCodeGen {
     next_local: u8,
     loop_stack: Vec<(String, String)>,
     current_function: String,
+    string_literals: Vec<(String, String)>, // (label, string_content)
 }
 
 impl NVMCodeGen {
@@ -63,28 +64,24 @@ impl NVMCodeGen {
             next_local: 0,
             loop_stack: Vec::new(),
             current_function: String::new(),
+            string_literals: Vec::new(),
         }
     }
 
     pub fn generate(&mut self, program: &Program) -> Vec<u8> {
-        
         self.bytecode.extend_from_slice(&[b'N', b'V', b'M', b'0']);
 
-        
         if let Some(main_func) = program.functions.iter().find(|f| f.name == "main") {
             self.generate_function(main_func, program);
         }
 
-        
         for func in &program.functions {
             if func.name != "main" {
                 self.generate_function(func, program);
             }
         }
 
-        
         for (module_name, module) in &program.modules {
-            // Skip generating stubs for stdio module - they're handled inline
             if module_name == "stdio" {
                 continue;
             }
@@ -100,6 +97,7 @@ impl NVMCodeGen {
             self.generate_print_int_helper();
         }
 
+        self.emit_string_literals();
         self.patch_labels();
 
         self.bytecode.clone()
@@ -110,24 +108,19 @@ impl NVMCodeGen {
         self.local_vars.clear();
         self.next_local = 0;
 
-        
         let func_label = format!("func_{}", func.name);
         self.add_label(&func_label);
 
-        
         for param in &func.params {
             self.local_vars.insert(param.name.clone(), self.next_local);
             self.next_local += 1;
         }
 
-        
         for stmt in &func.body {
             self.generate_statement(stmt, program);
         }
 
-        
         if func.name == "main" {
-            
             self.emit_push32(0);
             self.emit_byte(SYSCALL);
             self.emit_byte(SYSCALL_EXIT);
@@ -264,27 +257,37 @@ impl NVMCodeGen {
                 self.emit_byte(POP);
             }
 
-            Statement::InlineAsm { code } => {
-                // Parse and emit NVM assembly instructions
-                for line in code.lines() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with(';') {
-                        continue;
+            Statement::InlineAsm { parts } => {
+                use crate::ast::AsmPart;
+                
+                for part in parts {
+                    match part {
+                        AsmPart::Literal(s) => {
+                            for line in s.lines() {
+                                let line = line.trim();
+                                if !line.is_empty() && !line.starts_with(';') {
+                                    self.emit_asm_instruction(line);
+                                }
+                            }
+                        }
+                        AsmPart::Variable(var_name) => {
+                            if let Some(&local_index) = self.local_vars.get(var_name) {
+                                self.emit_byte(LOAD);
+                                self.emit_byte(local_index);
+                                self.emit_byte(SYSCALL);
+                                self.emit_byte(0x0E);
+                            } else {
+                                eprintln!("Warning: Variable '{}' not found in asm block", var_name);
+                            }
+                        }
                     }
-                    self.emit_asm_instruction(line);
                 }
             }
 
             Statement::PointerAssignment { target, value } => {
-                // Generate target address first
                 self.generate_expression(target, program);
-                
-                // Generate value
                 self.generate_expression(value, program);
-                
-                // Store value through pointer
-                // Stack: [address, value] - correct order for STORE_ABS
-                self.emit_byte(STORE_ABS);  // Store value at address
+                self.emit_byte(STORE_ABS);
             }
 
             _ => {}
@@ -297,13 +300,33 @@ impl NVMCodeGen {
                 self.emit_push32(*n as i32);
             }
 
-            Expression::String(_s) => {
+            Expression::String(s) => {
+                let string_label = self.generate_label("str");
+                self.string_literals.push((string_label.clone(), s.clone()));
                 self.emit_push32(0);
+                let patch_pos = self.bytecode.len() - 4;
+                self.label_patches.push((patch_pos as u32, string_label));
             }
 
-            Expression::TemplateString { parts: _ } => {
-                // For NVM, template strings are not fully supported yet
-                // Just push 0 as placeholder
+            Expression::TemplateString { parts } => {
+                use crate::ast::TemplateStringPart;
+                
+                for part in parts {
+                    match part {
+                        TemplateStringPart::Literal(lit) => {
+                            for ch in lit.as_bytes() {
+                                self.emit_push32(*ch as i32);
+                                self.emit_byte(SYSCALL);
+                                self.emit_byte(SYSCALL_PRINT);
+                            }
+                        }
+                        TemplateStringPart::Expression { expr, format: _ } => {
+                            self.generate_expression(expr, program);
+                            self.emit_byte(CALL32);
+                            self.emit_label_ref("__print_int");
+                        }
+                    }
+                }
                 self.emit_push32(0);
             }
 
@@ -331,13 +354,11 @@ impl NVMCodeGen {
                     BinaryOp::Less => self.emit_byte(LT),
                     BinaryOp::Greater => self.emit_byte(GT),
                     BinaryOp::LessEqual => {
-                        // a <= b is !(a > b)
                         self.emit_byte(GT);
                         self.emit_push32(0);
                         self.emit_byte(EQ);
                     }
                     BinaryOp::GreaterEqual => {
-                        // a >= b is !(a < b)
                         self.emit_byte(LT);
                         self.emit_push32(0);
                         self.emit_byte(EQ);
@@ -351,13 +372,11 @@ impl NVMCodeGen {
                 
                 match op {
                     UnaryOp::Neg => {
-                        // Negate: 0 - x
                         self.emit_push32(0);
                         self.emit_byte(SWAP);
                         self.emit_byte(SUB);
                     }
                     UnaryOp::Not => {
-                        // Logical not: x == 0
                         self.emit_push32(0);
                         self.emit_byte(EQ);
                     }
@@ -365,7 +384,6 @@ impl NVMCodeGen {
             }
 
             Expression::Call { function, args } => {
-                // Push arguments in reverse order (right-to-left)
                 for arg in args.iter().rev() {
                     self.generate_expression(arg, program);
                 }
@@ -376,64 +394,83 @@ impl NVMCodeGen {
             }
 
             Expression::ModuleCall { module, function, args } => {
-                // Special-case stdio functions: use SYS_PRINT syscall
                 if module == "stdio" {
                     match function.as_str() {
                         "PrintStr" | "PrintlnStr" => {
                             if !args.is_empty() {
                                 if let Expression::String(s) = &args[0] {
-                                    // Print each character using SYS_PRINT syscall
                                     for ch in s.as_bytes() {
                                         self.emit_push32(*ch as i32);
                                         self.emit_byte(SYSCALL);
                                         self.emit_byte(SYSCALL_PRINT);
                                     }
                                     
-                                    // If println, add newline
                                     if function == "PrintlnStr" {
                                         self.emit_push32('\n' as i32);
                                         self.emit_byte(SYSCALL);
                                         self.emit_byte(SYSCALL_PRINT);
                                     }
                                     
-                                    // Push dummy value since this is an expression that returns void
                                     self.emit_push32(0);
                                     return;
                                 }
                             }
                         }
                         "Print" => {
-                            // Print integer - call helper function
                             if !args.is_empty() {
-                                self.generate_expression(&args[0], program);
-                                self.emit_byte(CALL32);
-                                self.emit_label_ref("__print_int");
-                                // Push dummy value since this is an expression that returns void
-                                self.emit_push32(0);
-                                return;
+                                if let Expression::String(s) = &args[0] {
+                                    for ch in s.as_bytes() {
+                                        self.emit_push32(*ch as i32);
+                                        self.emit_byte(SYSCALL);
+                                        self.emit_byte(SYSCALL_PRINT);
+                                    }
+                                    self.emit_push32(0);
+                                    return;
+                                } else {
+                                    self.generate_expression(&args[0], program);
+                                    self.emit_byte(CALL32);
+                                    self.emit_label_ref("__print_int");
+                                    self.emit_push32(0);
+                                    return;
+                                }
                             }
                         }
                         "Println" => {
-                            // Print integer with newline
                             if !args.is_empty() {
-                                self.generate_expression(&args[0], program);
-                                self.emit_byte(CALL32);
-                                self.emit_label_ref("__print_int");
-                                self.emit_push32('\n' as i32);
-                                self.emit_byte(SYSCALL);
-                                self.emit_byte(SYSCALL_PRINT);
-                                // Push dummy value since this is an expression that returns void
-                                self.emit_push32(0);
-                                return;
+                                if let Expression::String(s) = &args[0] {
+                                    for ch in s.as_bytes() {
+                                        self.emit_push32(*ch as i32);
+                                        self.emit_byte(SYSCALL);
+                                        self.emit_byte(SYSCALL_PRINT);
+                                    }
+                                    self.emit_push32('\n' as i32);
+                                    self.emit_byte(SYSCALL);
+                                    self.emit_byte(SYSCALL_PRINT);
+                                    self.emit_push32(0);
+                                    return;
+                                } else if let Expression::TemplateString { .. } = &args[0] {
+                                    self.generate_expression(&args[0], program);
+                                    self.emit_push32('\n' as i32);
+                                    self.emit_byte(SYSCALL);
+                                    self.emit_byte(SYSCALL_PRINT);
+                                    return;
+                                } else {
+                                    self.generate_expression(&args[0], program);
+                                    self.emit_byte(CALL32);
+                                    self.emit_label_ref("__print_int");
+                                    self.emit_push32('\n' as i32);
+                                    self.emit_byte(SYSCALL);
+                                    self.emit_byte(SYSCALL_PRINT);
+                                    self.emit_push32(0);
+                                    return;
+                                }
                             }
                         }
                         "PrintChar" => {
-                            // Print single character
                             if !args.is_empty() {
                                 self.generate_expression(&args[0], program);
                                 self.emit_byte(SYSCALL);
                                 self.emit_byte(SYSCALL_PRINT);
-                                // Push dummy value since this is an expression that returns void
                                 self.emit_push32(0);
                                 return;
                             }
@@ -442,64 +479,36 @@ impl NVMCodeGen {
                     }
                 }
 
-                // NovariaOS syscall integration
                 if module == "novaria" {
-                    // Special handling for file operations with string literals
                     match function.as_str() {
                         "FileCreateStr" => {
-                            // FileCreateStr(filename: string, content: string)
                             if args.len() >= 2 {
                                 if let (Expression::String(filename), Expression::String(content)) = (&args[0], &args[1]) {
-                                    // Allocate strings in data section at known addresses
-                                    // For simplicity, we'll use a fixed memory location
-                                    // This is a hack - proper implementation needs data section
-                                    
-                                    // Push size
                                     self.emit_push32(content.len() as i32);
-                                    
-                                    // Push content pointer (we'll write string inline)
                                     let _content_label = self.generate_label("str_content");
                                     self.emit_push32(0);
                                     let _content_patch_pos = self.bytecode.len() - 4;
-                                    
-                                    // Push filename pointer
                                     let _filename_label = self.generate_label("str_filename");
                                     self.emit_push32(0);
                                     let _filename_patch_pos = self.bytecode.len() - 4;
-                                    
-                                    // Call SYS_CREATE
                                     self.emit_byte(SYSCALL);
                                     self.emit_byte(SYSCALL_CREATE);
-                                    
-                                    // Jump over string data
                                     let skip_label = self.generate_label("skip_strings");
                                     self.emit_byte(JMP32);
                                     self.emit_label_ref(&skip_label);
-                                    
-                                    // Emit filename string
                                     let filename_pos = self.bytecode.len();
                                     for ch in filename.as_bytes() {
                                         self.emit_byte(*ch);
                                     }
-                                    self.emit_byte(0); // Null terminator
-                                    
-                                    // Emit content string
+                                    self.emit_byte(0);
                                     let content_pos = self.bytecode.len();
                                     for ch in content.as_bytes() {
                                         self.emit_byte(*ch);
                                     }
-                                    self.emit_byte(0); // Null terminator
-                                    
-                                    // Patch addresses
+                                    self.emit_byte(0);
                                     let _filename_addr = (filename_pos + 0x100000) as i32;
                                     let _content_addr = (content_pos + 0x100000) as i32;
-                                    
-                                    // TODO: This won't work correctly - need proper data section
-                                    // For now, return error
-                                    
                                     self.add_label(&skip_label);
-                                    
-                                    // Push dummy return value
                                     self.emit_push32(0);
                                     return;
                                 }
@@ -508,12 +517,9 @@ impl NVMCodeGen {
                         _ => {}
                     }
                     
-                    // Push arguments in reverse order (syscalls expect right-to-left)
                     for arg in args.iter().rev() {
                         self.generate_expression(arg, program);
                     }
-
-                    // Generate syscall based on function name
                     match function.as_str() {
                         "Exit" => {
                             self.emit_byte(SYSCALL);
@@ -563,7 +569,6 @@ impl NVMCodeGen {
                             self.emit_byte(SYSCALL);
                             self.emit_byte(SYSCALL_PORT_OUT_BYTE);
                         }
-                        // Capability constants - return immediately
                         "CAP_FS_READ" => {
                             self.emit_push32(1);
                         }
@@ -586,7 +591,6 @@ impl NVMCodeGen {
                             self.emit_push32(65535);
                         }
                         _ => {
-                            // Unknown novaria function, try as regular call
                             let func_label = format!("func_{}_{}", module, function);
                             self.emit_byte(CALL32);
                             self.emit_label_ref(&func_label);
@@ -595,7 +599,6 @@ impl NVMCodeGen {
                     return;
                 }
 
-                // Push arguments in reverse order
                 for arg in args.iter().rev() {
                     self.generate_expression(arg, program);
                 }
@@ -622,6 +625,16 @@ impl NVMCodeGen {
             Expression::Deref { operand } => {
                 self.generate_expression(operand, program);
                 self.emit_byte(LOAD_ABS);
+            }
+
+            Expression::Eval { instruction } => {
+                self.generate_expression(instruction, program);
+                
+                if let Expression::String(instr_str) = instruction.as_ref() {
+                    self.emit_asm_instruction(instr_str.trim());
+                } else {
+                    eprintln!("Warning: eval() with non-literal string not fully supported yet");
+                }
             }
 
             _ => {
@@ -677,7 +690,6 @@ impl NVMCodeGen {
     fn emit_label_ref(&mut self, label: &str) {
         let pos = self.bytecode.len() as u32;
         self.label_patches.push((pos, label.to_string()));
-        // Emit placeholder
         self.bytecode.extend_from_slice(&[0, 0, 0, 0]);
     }
 
@@ -705,11 +717,18 @@ impl NVMCodeGen {
         }
     }
 
+    fn emit_string_literals(&mut self) {
+        let literals = self.string_literals.clone();
+        for (label, content) in literals {
+            self.add_label(&label);
+            for ch in content.as_bytes() {
+                self.emit_byte(*ch);
+            }
+            self.emit_byte(0);
+        }
+    }
+
     fn generate_print_int_helper(&mut self) {
-        // Helper function to print an integer
-        // Stack layout on entry: [... , param, return_address] (top)
-        // Uses iterative approach - builds number in reverse using division/modulo powers
-        // Uses locals 250-255 to avoid conflicts with user code
         self.add_label("__print_int");
         
         // Save return address to local 255

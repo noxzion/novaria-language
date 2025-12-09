@@ -390,6 +390,11 @@ impl<'a> CodeGen<'a> {
                 self.generate_expression(operand);
                 self.emit(&[0x48, 0x8B, 0x00]);
             }
+            Expression::Eval { instruction: _ } => {
+                // eval() is not supported for PE/x64 target
+                // Just push 0
+                self.emit(&[0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00]); // mov rax, 0
+            }
             Expression::String(s) => {
                 // Check if contains interpolation
                 if s.contains("$(") {

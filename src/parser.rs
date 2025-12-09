@@ -418,47 +418,100 @@ impl Parser {
     }
 
     fn parse_asm(&mut self) -> crate::error::Result<Statement> {
+        use crate::ast::AsmPart;
+        
         self.expect(Token::Asm)?;
         
         if let Token::String(code) = self.current_token() {
             let asm_code = code.clone();
             self.advance();
-            Ok(Statement::InlineAsm { code: asm_code })
+            let parts = self.parse_asm_interpolation(&asm_code);
+            Ok(Statement::InlineAsm { parts })
         } else if matches!(self.current_token(), Token::LeftBrace) {
             self.advance();
             self.skip_newlines();
             
-            let mut asm_lines = Vec::new();
+            use crate::ast::AsmPart;
+            let mut parts = Vec::new();
+            
             while !matches!(self.current_token(), Token::RightBrace) {
-                if let Token::Identifier(instr) = self.current_token() {
-                    let mut line = instr.clone();
-                    self.advance();
-                    
-                    while !matches!(self.current_token(), Token::Newline | Token::RightBrace) {
-                        match self.current_token() {
-                            Token::Number(n) => {
-                                line.push_str(&format!(" {}", n));
+                match self.current_token() {
+                    Token::Dollar => {
+                        // Handle $(varname)
+                        self.advance();
+                        if matches!(self.current_token(), Token::LeftParen) {
+                            self.advance();
+                            if let Token::Identifier(var_name) = self.current_token() {
+                                parts.push(AsmPart::Variable(var_name.clone()));
                                 self.advance();
-                            }
-                            Token::Identifier(id) => {
-                                line.push_str(&format!(" {}", id));
-                                self.advance();
-                            }
-                            _ => {
-                                self.advance();
+                                self.expect(Token::RightParen)?;
                             }
                         }
                     }
-                    asm_lines.push(line);
+                    Token::Identifier(instr) => {
+                        let instr_name = instr.clone();
+                        parts.push(AsmPart::Literal(instr_name));
+                        self.advance();
+                    }
+                    Token::Number(n) => {
+                        parts.push(AsmPart::Literal(format!(" {}", n)));
+                        self.advance();
+                    }
+                    Token::Newline => {
+                        parts.push(AsmPart::Literal("\n".to_string()));
+                        self.advance();
+                    }
+                    _ => {
+                        self.advance();
+                    }
                 }
-                self.skip_newlines();
             }
             
             self.expect(Token::RightBrace)?;
-            Ok(Statement::InlineAsm { code: asm_lines.join("\n") })
+            Ok(Statement::InlineAsm { parts })
         } else {
             Err(self.error("expected assembly code string or block after 'asm'".to_string()))
         }
+    }
+    
+    fn parse_asm_interpolation(&self, code: &str) -> Vec<crate::ast::AsmPart> {
+        use crate::ast::AsmPart;
+        
+        let mut parts = Vec::new();
+        let mut current_literal = String::new();
+        let mut chars = code.chars().peekable();
+        
+        while let Some(ch) = chars.next() {
+            if ch == '$' && chars.peek() == Some(&'(') {
+                chars.next(); // consume '('
+                
+                // Save current literal if any
+                if !current_literal.is_empty() {
+                    parts.push(AsmPart::Literal(current_literal.clone()));
+                    current_literal.clear();
+                }
+                
+                // Extract variable name
+                let mut var_name = String::new();
+                while let Some(ch) = chars.next() {
+                    if ch == ')' {
+                        break;
+                    }
+                    var_name.push(ch);
+                }
+                
+                parts.push(AsmPart::Variable(var_name.trim().to_string()));
+            } else {
+                current_literal.push(ch);
+            }
+        }
+        
+        // Add remaining literal if any
+        if !current_literal.is_empty() {
+            parts.push(AsmPart::Literal(current_literal));
+        }
+        
+        parts
     }
 
     fn parse_expression(&mut self) -> Expression {
@@ -825,6 +878,13 @@ impl Parser {
 
                     if let Err(_) = self.expect(Token::RightParen) {
                         panic!("Expected closing parenthesis in function call");
+                    }
+
+                    // Special handling for eval() function
+                    if name == "eval" && args.len() == 1 {
+                        return Expression::Eval {
+                            instruction: Box::new(args[0].clone()),
+                        };
                     }
 
                     Expression::Call {

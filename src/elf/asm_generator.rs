@@ -315,8 +315,25 @@ impl AsmGenerator {
                 self.output.push_str("    movq    %rcx, (%rax)\n");
             }
 
-            Statement::InlineAsm { code } => {
-                self.output.push_str(&format!("    # inline asm\n{}\n", code));
+            Statement::InlineAsm { parts } => {
+                use crate::ast::AsmPart;
+                
+                self.output.push_str("    # inline asm\n");
+                
+                // Build full asm code with variable interpolation
+                for part in parts {
+                    match part {
+                        AsmPart::Literal(s) => {
+                            self.output.push_str(s);
+                        }
+                        AsmPart::Variable(var_name) => {
+                            // For ELF/x86-64, we'd load from stack or register
+                            // This is a simplified version
+                            self.output.push_str(&format!("    # Variable: {}\n", var_name));
+                        }
+                    }
+                }
+                self.output.push_str("\n");
             }
             Statement::ArrayAssignment { name, index, value } => {
                 self.generate_expression(value);
@@ -652,6 +669,11 @@ impl AsmGenerator {
             Expression::Deref { operand } => {
                 self.generate_expression(operand);
                 self.output.push_str("    movq    (%rax), %rax\n");
+            }
+            Expression::Eval { instruction: _ } => {
+                // eval() is not supported for ELF/x64 target
+                // Just push 0
+                self.output.push_str("    movq    $0, %rax\n");
             }
         }
     }
